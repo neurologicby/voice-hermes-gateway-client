@@ -10,6 +10,8 @@ from voice_client.net.protocol import (
     audio_start,
     decode_audio_chunk,
     encode_audio_chunk,
+    hello,
+    pair_request,
 )
 
 
@@ -90,3 +92,25 @@ def test_optional_final_metrics_are_parsed() -> None:
 def test_invalid_final_metrics_are_rejected() -> None:
     with pytest.raises(ClientProtocolError):
         STTLatencyMetrics.from_final({"metrics": {"queue_wait_ms": -1}})
+
+
+def test_handshake_frames_validate_identity() -> None:
+    device_id = "9f5e5b18-0d07-47da-8ed4-4c3a67dd535e"
+    assert hello(device_id, "dmitry") == {
+        "type": "hello",
+        "proto": 1,
+        "device_id": device_id,
+        "user": "dmitry",
+        "client": "voice-client/0.1",
+    }
+    assert pair_request(device_id, "Иванов Иван")["type"] == "pair_request"
+    with pytest.raises(ClientProtocolError):
+        hello("not-a-uuid", "dmitry")
+
+
+def test_interrupt_resets_active_audio_turn() -> None:
+    turn = ClientAudioTurn()
+    turn.begin(3)
+    turn.interrupt()
+    assert turn.active_seq is None
+    assert turn.begin(4, "en")["lang"] == "en"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
+from uuid import UUID
 
 PROTOCOL_VERSION = 1
 AUDIO_SEQUENCE_BYTES = 8
@@ -104,6 +105,31 @@ class ClientAudioTurn:
         self.active_seq = None
         self.end_requested = False
 
+    def interrupt(self) -> None:
+        """Отменяет локальную реплику при barge-in или разрыве транспорта."""
+
+        self.active_seq = None
+        self.end_requested = False
+
+
+def hello(device_id: str, user: str, client: str = "voice-client/0.1") -> dict[str, object]:
+    _validate_device_id(device_id)
+    _validate_text_field(user, "user")
+    _validate_text_field(client, "client")
+    return {
+        "type": "hello",
+        "proto": PROTOCOL_VERSION,
+        "device_id": device_id,
+        "user": user,
+        "client": client,
+    }
+
+
+def pair_request(device_id: str, user_name: str) -> dict[str, str]:
+    _validate_device_id(device_id)
+    _validate_text_field(user_name, "user_name")
+    return {"type": "pair_request", "device_id": device_id, "user_name": user_name}
+
 
 def audio_start(seq: int, language: SpeechLanguage = "ru") -> dict[str, object]:
     _validate_sequence(seq)
@@ -142,6 +168,20 @@ def decode_audio_chunk(frame: bytes) -> tuple[int, bytes]:
 def _validate_sequence(seq: int) -> None:
     if isinstance(seq, bool) or not isinstance(seq, int) or not 1 <= seq <= MAX_SEQUENCE:
         raise ClientProtocolError("sequence must be uint64 greater than zero")
+
+
+def _validate_device_id(device_id: str) -> None:
+    try:
+        parsed = UUID(device_id)
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ClientProtocolError("device_id must be a UUID") from exc
+    if str(parsed) != device_id.lower():
+        raise ClientProtocolError("device_id must use canonical UUID form")
+
+
+def _validate_text_field(value: str, field: str) -> None:
+    if not isinstance(value, str) or not value.strip() or len(value) > 128:
+        raise ClientProtocolError(f"{field} must contain 1..128 characters")
 
 
 def _nonnegative_number(value: Any) -> float:
