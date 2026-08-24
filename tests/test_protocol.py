@@ -5,6 +5,7 @@ import pytest
 from voice_client.net.protocol import (
     ClientAudioTurn,
     ClientProtocolError,
+    STTLatencyMetrics,
     audio_end,
     audio_start,
     decode_audio_chunk,
@@ -67,3 +68,25 @@ def test_language_switch_is_persisted_for_next_audio_turn() -> None:
 def test_auto_language_is_not_supported() -> None:
     with pytest.raises(ClientProtocolError):
         audio_start(1, "auto")  # type: ignore[arg-type]
+
+
+def test_optional_final_metrics_are_parsed() -> None:
+    metrics = STTLatencyMetrics.from_final(
+        {
+            "type": "final",
+            "metrics": {
+                "queue_wait_ms": 1.25,
+                "max_queue_wait_ms": 1,
+                "first_interim_ms": 145.2,
+                "finalization_ms": 18.4,
+                "chunks": 12,
+            },
+        }
+    )
+    assert metrics == STTLatencyMetrics(1.25, 1.0, 145.2, 18.4, 12)
+    assert STTLatencyMetrics.from_final({"type": "final"}) is None
+
+
+def test_invalid_final_metrics_are_rejected() -> None:
+    with pytest.raises(ClientProtocolError):
+        STTLatencyMetrics.from_final({"metrics": {"queue_wait_ms": -1}})

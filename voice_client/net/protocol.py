@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass
+from typing import Any, Literal
 
 PROTOCOL_VERSION = 1
 AUDIO_SEQUENCE_BYTES = 8
@@ -12,6 +13,43 @@ SpeechLanguage = Literal["ru", "en"]
 
 class ClientProtocolError(ValueError):
     """Ошибка локального формирования wire frame."""
+
+
+@dataclass(frozen=True, slots=True)
+class STTLatencyMetrics:
+    queue_wait_ms: float
+    max_queue_wait_ms: float
+    first_interim_ms: float | None
+    finalization_ms: float
+    chunks: int
+
+    @classmethod
+    def from_final(cls, message: dict[str, Any]) -> STTLatencyMetrics | None:
+        raw = message.get("metrics")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ClientProtocolError("final metrics must be an object")
+        try:
+            queue_wait_ms = _nonnegative_number(raw["queue_wait_ms"])
+            max_queue_wait_ms = _nonnegative_number(raw["max_queue_wait_ms"])
+            finalization_ms = _nonnegative_number(raw["finalization_ms"])
+            first_raw = raw["first_interim_ms"]
+            first_interim_ms = (
+                None if first_raw is None else _nonnegative_number(first_raw)
+            )
+            chunks = raw["chunks"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ClientProtocolError("invalid final metrics") from exc
+        if isinstance(chunks, bool) or not isinstance(chunks, int) or chunks < 0:
+            raise ClientProtocolError("invalid final metrics chunks")
+        return cls(
+            queue_wait_ms=queue_wait_ms,
+            max_queue_wait_ms=max_queue_wait_ms,
+            first_interim_ms=first_interim_ms,
+            finalization_ms=finalization_ms,
+            chunks=chunks,
+        )
 
 
 class ClientAudioTurn:
@@ -104,3 +142,12 @@ def decode_audio_chunk(frame: bytes) -> tuple[int, bytes]:
 def _validate_sequence(seq: int) -> None:
     if isinstance(seq, bool) or not isinstance(seq, int) or not 1 <= seq <= MAX_SEQUENCE:
         raise ClientProtocolError("sequence must be uint64 greater than zero")
+
+
+def _nonnegative_number(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("metric must be numeric")
+    converted = float(value)
+    if converted < 0:
+        raise ValueError("metric must be non-negative")
+    return converted
