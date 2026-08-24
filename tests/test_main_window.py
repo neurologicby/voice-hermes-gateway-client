@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Signal
 from pytestqt.qtbot import QtBot
 
 from voice_client.history import HistoryStore
@@ -88,10 +88,10 @@ def test_ptt_language_mute_and_state_are_wired(tmp_path: Path, qtbot: QtBot) -> 
     window.language_combo.setCurrentIndex(1)
     assert worker.calls[-1] == ("language", "en")
 
-    qtbot.mousePress(window.talk_button, Qt.MouseButton.LeftButton)
+    window.talk_button.pressed.emit()
     assert recorder.running
     assert worker.calls[-1] == ("begin", 1)
-    qtbot.mouseRelease(window.talk_button, Qt.MouseButton.LeftButton)
+    window.talk_button.released.emit()
     assert not recorder.running
     assert worker.calls[-1] == ("end", None)
 
@@ -125,5 +125,5 @@ def test_barge_in_is_submitted_before_new_turn(tmp_path: Path, qtbot: QtBot) -> 
             "format": {"sample_rate": 24_000, "channels": 1, "sample_width": 2},
         }
     )
-    qtbot.mousePress(window.talk_button, Qt.MouseButton.LeftButton)
+    window.talk_button.pressed.emit()
     assert worker.calls[-2:] == [("interrupt", None), ("begin", 1)]

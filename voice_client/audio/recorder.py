@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -49,7 +49,7 @@ class PCM16Resampler:
                 return b""
             grouped = samples[:complete].astype(np.int32).reshape(-1, factor)
             output = np.rint(grouped.mean(axis=1)).astype("<i2")
-            return output.tobytes()
+            return cast(bytes, output.tobytes())
         return self._linear(samples)
 
     def reset(self) -> None:
@@ -209,10 +209,10 @@ class MicrophoneRecorder:
 
 def _sounddevice_input_stream(**kwargs: Any) -> InputStream:
     try:
-        import sounddevice  # type: ignore[import-untyped]
+        import sounddevice
     except ImportError as exc:  # pragma: no cover - optional extra
         raise RuntimeError("install voice-gateway-client[audio] for capture") from exc
-    return sounddevice.RawInputStream(**kwargs)  # type: ignore[no-any-return]
+    return cast(InputStream, sounddevice.RawInputStream(**kwargs))
 
 
 __all__ = ["InputStream", "MicrophoneRecorder", "PCM16Resampler"]
