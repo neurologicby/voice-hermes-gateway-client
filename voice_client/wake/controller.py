@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, Protocol
 
@@ -41,25 +43,35 @@ class WakeController:
         *,
         initial_sequence: int = 1,
         vad_engine: VADEngine | None = None,
+        rearm_delay_seconds: float = 0.75,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not 1 <= initial_sequence <= MAX_SEQUENCE:
             raise ValueError("initial_sequence must be a positive uint64")
+        if rearm_delay_seconds < 0:
+            raise ValueError("rearm_delay_seconds must not be negative")
         self.engine = engine
         self.transport = transport
         self.state = WakeState.DISCONNECTED
         self._next_sequence = initial_sequence
         self._vad_engine = vad_engine
         self._vad_session: VADSession | None = None
+        self._rearm_delay_seconds = rearm_delay_seconds
+        self._clock = clock
+        self._rearm_at = 0.0
 
     def set_connected(self, connected: bool) -> None:
         self._reset_vad()
         self.engine.reset()
+        self._rearm_at = 0.0
         self.state = WakeState.SLEEP if connected else WakeState.DISCONNECTED
 
     def process_pcm(self, pcm_s16le: bytes) -> bool:
         """Обработать mic chunk; True означает новый локальный trigger."""
 
         if self.state is WakeState.SLEEP:
+            if self._clock() < self._rearm_at:
+                return False
             if not self.engine.process(pcm_s16le):
                 return False
             seq = self._next_sequence
@@ -116,6 +128,7 @@ class WakeController:
         }:
             self.engine.reset()
             self._reset_vad()
+            self._rearm_at = self._clock() + self._rearm_delay_seconds
             self.state = WakeState.SLEEP
 
     def close(self) -> None:

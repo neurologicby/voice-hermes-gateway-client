@@ -49,6 +49,8 @@ streaming ASR-моделей с явной открытой лицензией. 
 (MIT, SHA-256 проверяется) ждёт начало речи и завершает `audio_start` через
 `audio_end` после 600 мс тишины. Весь анализ выполняется в audio worker; Qt thread
 и WebSocket loop не блокируются. Regression можно повторить на локальном WAV:
+После `tts_end` detector ждёт 750 мс перед повторным arm, чтобы акустический хвост
+ответа Hermes не создавал ложный русский trigger.
 
 ```powershell
 python tools/wake_audio_probe.py path\to\speech.wav `

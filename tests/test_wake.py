@@ -165,3 +165,17 @@ def test_russian_hands_free_turn_ends_after_vad_silence() -> None:
     ]
     assert controller.state is WakeState.THINKING
     assert vad.cancelled
+
+
+def test_tts_tail_cannot_retrigger_russian_wake_phrase() -> None:
+    now = [10.0]
+    engine = FakeWake()
+    transport = FakeTransport()
+    controller = WakeController(engine, transport, clock=lambda: now[0])
+    controller.set_connected(True)
+    controller.on_server_event({"type": "tts_start"})
+    controller.on_server_event({"type": "tts_end"})
+    engine.trigger = True
+    assert not controller.process_pcm(b"speaker tail")
+    now[0] += 0.75
+    assert controller.process_pcm(b"new user wake")
