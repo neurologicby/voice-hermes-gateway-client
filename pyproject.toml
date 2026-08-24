@@ -30,6 +30,9 @@ audio = [
     "sherpa-onnx==1.13.4",
     "sounddevice==0.5.2",
 ]
+packaging = [
+    "pyinstaller==6.16.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

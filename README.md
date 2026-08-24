@@ -63,3 +63,25 @@ python tools/wake_audio_probe.py path\to\speech.wav `
 
 GNU GPL v3 или более поздняя версия. Модели поставляются только при наличии
 явной лицензии, разрешающей использование и распространение.
+
+## Windows installer
+
+Release-сборка использует PyInstaller в режиме `onedir`, после чего NSIS создаёт
+обычный пользовательский Setup без запроса прав администратора. Установщик добавляет
+ярлыки в меню «Пуск» и на рабочий стол и регистрирует штатное удаление Windows.
+
+Из корня `client`:
+
+```powershell
+..\.venv\Scripts\python.exe -m pip install ".[audio,packaging]"
+.\packaging\build.ps1
+```
+
+Готовый файл появляется как `dist/VoiceGatewayClient-0.1.0-Setup.exe`. На GitHub
+workflow `Windows installer` выполняет тесты, собирает Setup и прикладывает его к
+Release при публикации тега вида `v0.1.0`.
+
+STT-модели для wake phrase пока не встраиваются в Setup: ручной PTT, WebSocket,
+pairing, история и воспроизведение работают сразу, а wake word требует отдельно
+установленный проверенный model bundle. Это удерживает базовый установщик небольшим
+и не смешивает код GPL с артефактами под отдельными лицензиями.
