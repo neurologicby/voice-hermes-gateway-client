@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from voice_client.net.protocol import (
+    ClientAudioTurn,
     ClientProtocolError,
     audio_end,
     audio_start,
@@ -28,3 +29,28 @@ def test_invalid_sequence_is_rejected(seq: int) -> None:
 def test_invalid_pcm_chunk_is_rejected(pcm: bytes) -> None:
     with pytest.raises(ClientProtocolError):
         encode_audio_chunk(1, pcm)
+
+
+def test_server_vad_endpoint_stops_chunks_and_requests_audio_end() -> None:
+    turn = ClientAudioTurn()
+    assert turn.begin(7, "ru")["type"] == "audio_start"
+    assert turn.chunk(b"\x01\x00").endswith(b"\x01\x00")
+    assert turn.server_vad_endpoint(7) == {
+        "type": "audio_end",
+        "seq": 7,
+        "vad": "server_silence",
+    }
+    assert turn.server_vad_endpoint(7) is None
+    with pytest.raises(ClientProtocolError):
+        turn.chunk(b"\x01\x00")
+    turn.accept_final(7)
+    assert turn.completed_seq == 7
+
+
+def test_audio_turn_rejects_stale_server_events() -> None:
+    turn = ClientAudioTurn()
+    turn.begin(7)
+    with pytest.raises(ClientProtocolError):
+        turn.server_vad_endpoint(6)
+    with pytest.raises(ClientProtocolError):
+        turn.accept_final(6)
