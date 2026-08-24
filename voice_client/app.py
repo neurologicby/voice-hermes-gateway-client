@@ -74,3 +74,7 @@ def _setting(settings: QSettings, key: str, default: str) -> str:
 
 
 __all__ = ["create_window", "main"]
+
+
+if __name__ == "__main__":  # pragma: no cover - desktop entry point
+    raise SystemExit(main())
