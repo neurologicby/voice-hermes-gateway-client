@@ -52,7 +52,7 @@ def test_barge_in_interrupt_precedes_next_audio_start() -> None:
     assert pipeline.state is PipelineState.TALKING
     pipeline.start_utterance()
     assert transport.calls[-2:] == [("interrupt", None), ("begin", 1)]
-    assert pipeline.state is PipelineState.LISTENING
+    assert pipeline.state.value == PipelineState.LISTENING.value
 
 
 def test_server_events_drive_pipeline_state() -> None:
@@ -62,6 +62,6 @@ def test_server_events_drive_pipeline_state() -> None:
     pipeline.on_server_event({"type": "final", "seq": 1, "text": "тест"})
     assert pipeline.state is PipelineState.THINKING
     pipeline.on_server_event({"type": "tts_start", "stream_id": "one"})
-    assert pipeline.state is PipelineState.TALKING
+    assert pipeline.state.value == PipelineState.TALKING.value
     pipeline.on_server_event({"type": "tts_end", "stream_id": "one"})
-    assert pipeline.state is PipelineState.IDLE
+    assert pipeline.state.value == PipelineState.IDLE.value
