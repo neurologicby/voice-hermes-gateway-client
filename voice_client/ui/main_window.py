@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import MAX_SEQUENCE, SpeechLanguage
-from voice_client.wake import WakeEngineLoader, WakeWordEngine
+from voice_client.wake import WakeEngineLoader, WakeResources, WakeWordEngine
 from voice_client.wake.controller import WakeController
 
 
@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
     """UI никогда не выполняет WebSocket, PortAudio или SQLite migration."""
 
     wake_triggered = Signal()
+    wake_runtime_failed = Signal(str)
 
     def __init__(
         self,
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self.worker.state_changed.connect(self.on_connection_state)
         self.worker.failed.connect(self.on_failure)
         self.wake_triggered.connect(self._on_wake_triggered)
+        self.wake_runtime_failed.connect(self._wake_failed)
         if self._wake_loader is not None:
             self._wake_loader.loaded.connect(self._wake_loaded)
             self._wake_loader.failed.connect(self._wake_failed)
@@ -369,15 +371,23 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _wake_loaded(self, engine: object) -> None:
-        if not isinstance(engine, WakeWordEngine):
+        if isinstance(engine, WakeResources):
+            resources = engine
+        elif isinstance(engine, WakeWordEngine):
+            resources = WakeResources(engine)
+        else:
             self._wake_failed("Wake loader вернул неверный engine")
             return
         if not self.wake_button.isChecked():
-            engine.close()
+            resources.close()
             return
         if self._wake_controller is not None:
             self._wake_controller.close()
-        self._wake_controller = WakeController(engine, self.worker)
+        self._wake_controller = WakeController(
+            resources.engine,
+            self.worker,
+            vad_engine=resources.vad_engine,
+        )
         self._wake_controller.set_connected(self._wake_connected)
         self.wake_phrase_edit.setEnabled(True)
         self.wake_status.setText("Ожидание" if self._wake_connected else "Нет связи")
@@ -391,8 +401,13 @@ class MainWindow(QMainWindow):
 
     def _wake_audio(self, pcm_s16le: bytes) -> None:
         controller = self._wake_controller
-        if controller is not None and controller.process_pcm(pcm_s16le):
-            self.wake_triggered.emit()
+        if controller is None:
+            return
+        try:
+            if controller.process_pcm(pcm_s16le):
+                self.wake_triggered.emit()
+        except Exception as exc:
+            self.wake_runtime_failed.emit(str(exc) or type(exc).__name__)
 
     @Slot()
     def _on_wake_triggered(self) -> None:

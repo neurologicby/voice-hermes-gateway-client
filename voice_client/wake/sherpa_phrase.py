@@ -55,7 +55,11 @@ class SherpaPhraseWakeEngine(WakeWordEngine):
         self._stream.accept_waveform(self._model_sample_rate, samples)
         while self._recognizer.is_ready(self._stream):
             self._recognizer.decode_stream(self._stream)
-        text = normalize_phrase(str(self._recognizer.get_result(self._stream).text))
+        getter = getattr(self._recognizer, "get_result_all", None)
+        result = getter(self._stream) if getter is not None else self._recognizer.get_result(
+            self._stream
+        )
+        text = normalize_phrase(str(getattr(result, "text", result)))
         if not text or text == self._last_text:
             return False
         self._last_text = text

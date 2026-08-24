@@ -8,3 +8,6 @@ __all__ = [
     "AudioPlayer",
     "TTSPlaybackBuffer",
 ]
+from .vad import VADEngine, VADResult, VADSession, build_silero_vad_engine
+
+__all__ = ["VADEngine", "VADResult", "VADSession", "build_silero_vad_engine"]

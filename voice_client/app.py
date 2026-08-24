@@ -14,13 +14,14 @@ from PySide6.QtWidgets import QApplication
 from voice_client.audio.devices import AudioDeviceScanner
 from voice_client.audio.player import AudioPlayer
 from voice_client.audio.recorder import MicrophoneRecorder
+from voice_client.audio.vad import build_silero_vad_engine
 from voice_client.file_transfer import FileTransferLoader
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import SpeechLanguage
 from voice_client.net.ws_client import VoiceWSClient
 from voice_client.qt_worker import AsyncioNetworkWorker
 from voice_client.ui import MainWindow
-from voice_client.wake import WakeEngineLoader, WakeWordEngine, build_sherpa_phrase_engine
+from voice_client.wake import WakeEngineLoader, WakeResources, build_sherpa_phrase_engine
 
 
 def create_window(settings: QSettings | None = None) -> MainWindow:
@@ -60,9 +61,19 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
             )
         ),
     }
+    wake_vad_dir = Path(
+        _setting(
+            config,
+            "wake/vad_model_dir",
+            str(workspace_root / "plugin/models/silero-vad-v5"),
+        )
+    )
 
-    def wake_factory(selected: SpeechLanguage, phrase: str) -> WakeWordEngine:
-        return build_sherpa_phrase_engine(selected, phrase, wake_model_dirs[selected])
+    def wake_factory(selected: SpeechLanguage, phrase: str) -> WakeResources:
+        return WakeResources(
+            build_sherpa_phrase_engine(selected, phrase, wake_model_dirs[selected]),
+            build_silero_vad_engine(wake_vad_dir),
+        )
 
     player = AudioPlayer(device=output_device)
     client = VoiceWSClient(

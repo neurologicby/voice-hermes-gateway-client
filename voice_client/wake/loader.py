@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
 
+from voice_client.audio.vad import VADEngine
 from voice_client.net.protocol import SpeechLanguage
 
 from .base import WakeWordEngine
 
-WakeEngineFactory = Callable[[SpeechLanguage, str], WakeWordEngine]
+
+@dataclass(frozen=True, slots=True)
+class WakeResources:
+    engine: WakeWordEngine
+    vad_engine: VADEngine | None = None
+
+    def close(self) -> None:
+        self.engine.close()
+
+
+WakeEngineFactory = Callable[[SpeechLanguage, str], WakeWordEngine | WakeResources]
 
 
 class WakeEngineLoader(QObject):
@@ -45,19 +57,26 @@ class WakeEngineLoader(QObject):
 
     def _load(self, generation: int, language: SpeechLanguage, phrase: str) -> None:
         try:
-            engine = self._factory(language, phrase)
+            loaded = self._factory(language, phrase)
         except Exception as exc:
             if self._current(generation):
                 self.failed.emit(str(exc) or type(exc).__name__)
             return
         if not self._current(generation):
-            engine.close()
+            _close_loaded(loaded)
             return
-        self.loaded.emit(engine)
+        self.loaded.emit(loaded)
 
     def _current(self, generation: int) -> bool:
         with self._lock:
             return not self._closed and generation == self._generation
 
 
-__all__ = ["WakeEngineFactory", "WakeEngineLoader"]
+def _close_loaded(loaded: WakeWordEngine | WakeResources) -> None:
+    if isinstance(loaded, WakeResources):
+        loaded.close()
+    else:
+        loaded.close()
+
+
+__all__ = ["WakeEngineFactory", "WakeEngineLoader", "WakeResources"]

@@ -45,6 +45,18 @@ streaming ASR-моделей с явной открытой лицензией. 
 или фразы безопасно создаёт новый decoder. В установленной сборке эти пути будут
 заменены каталогом ресурсов клиента.
 
+Русский — основной hands-free профиль. После trigger локальный Silero VAD v5
+(MIT, SHA-256 проверяется) ждёт начало речи и завершает `audio_start` через
+`audio_end` после 600 мс тишины. Весь анализ выполняется в audio worker; Qt thread
+и WebSocket loop не блокируются. Regression можно повторить на локальном WAV:
+
+```powershell
+python tools/wake_audio_probe.py path\to\speech.wav `
+  --language ru --phrase "привет гермес" `
+  --model-dir path\to\t-one-russian `
+  --vad-model-dir path\to\silero-vad-v5
+```
+
 ## Лицензия
 
 GNU GPL v3 или более поздняя версия. Модели поставляются только при наличии
