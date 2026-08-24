@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from voice_client.net.protocol import ClientProtocolError
 
@@ -32,10 +32,11 @@ class AudioOutputFormat:
         values = tuple(raw_format.get(key) for key in ("sample_rate", "channels", "sample_width"))
         if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
             raise ClientProtocolError("invalid TTS format")
+        sample_rate, channels, sample_width = cast(tuple[int, int, int], values)
         audio_format = cls(
-            sample_rate=int(values[0]),
-            channels=int(values[1]),
-            sample_width=int(values[2]),
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
         )
         if audio_format != cls():
             raise ClientProtocolError("protocol v1 requires PCM S16LE mono 24 kHz")
