@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import getpass
 import sys
+from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ from voice_client.net.protocol import SpeechLanguage
 from voice_client.net.ws_client import VoiceWSClient
 from voice_client.qt_worker import AsyncioNetworkWorker
 from voice_client.ui import MainWindow
+from voice_client.wake import WakeEngineLoader, WakeWordEngine, build_sherpa_phrase_engine
 
 
 def create_window(settings: QSettings | None = None) -> MainWindow:
@@ -34,6 +36,33 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
         language = "ru"
     microphone_device = _int_setting(config, "audio/input_device")
     output_device = _int_setting(config, "audio/output_device")
+    wake_phrase = _setting(config, "wake/phrase", "Привет Гермес")
+    workspace_root = Path(__file__).resolve().parents[2]
+    wake_model_dirs = {
+        "ru": Path(
+            _setting(
+                config,
+                "wake/ru_model_dir",
+                str(
+                    workspace_root
+                    / "plugin/models/sherpa-onnx-streaming-t-one-russian-2025-09-08"
+                ),
+            )
+        ),
+        "en": Path(
+            _setting(
+                config,
+                "wake/en_model_dir",
+                str(
+                    workspace_root
+                    / "plugin/models/sherpa-onnx-streaming-zipformer-en-2023-06-26-int8"
+                ),
+            )
+        ),
+    }
+
+    def wake_factory(selected: SpeechLanguage, phrase: str) -> WakeWordEngine:
+        return build_sherpa_phrase_engine(selected, phrase, wake_model_dirs[selected])
 
     player = AudioPlayer(device=output_device)
     client = VoiceWSClient(
@@ -59,6 +88,8 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
         on_output_device=player.set_device,
         microphone_device=microphone_device,
         output_device=output_device,
+        wake_loader=WakeEngineLoader(wake_factory),
+        wake_phrase=wake_phrase,
     )
     window.language_combo.setCurrentIndex(0 if language == "ru" else 1)
     window.language_combo.currentIndexChanged.connect(
@@ -70,6 +101,12 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
     window.output_combo.currentIndexChanged.connect(
         lambda: config.setValue("audio/output_device", window.output_combo.currentData())
     )
+    window.wake_phrase_edit.editingFinished.connect(
+        lambda: config.setValue("wake/phrase", window.wake_phrase_edit.text().strip())
+    )
+    window.wake_button.toggled.connect(lambda on: config.setValue("wake/enabled", on))
+    if _bool_setting(config, "wake/enabled"):
+        window.wake_button.setChecked(True)
     return window
 
 
@@ -97,6 +134,13 @@ def _int_setting(settings: QSettings, key: str) -> int | None:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return None
+
+
+def _bool_setting(settings: QSettings, key: str) -> bool:
+    value = settings.value(key, False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 __all__ = ["create_window", "main"]

@@ -10,6 +10,7 @@ from voice_client.audio.devices import AudioDevice
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import SpeechLanguage
 from voice_client.ui import MainWindow
+from voice_client.wake import WakeWordEngine
 
 
 class FakeWorker(QObject):
@@ -74,6 +75,40 @@ class FakeRecorder:
 
     def set_device(self, device: int | str | None) -> None:
         self.device = device
+
+    def feed(self, pcm: bytes) -> None:
+        assert self.callback is not None
+        self.callback(pcm)
+
+
+class FakeWakeEngine(WakeWordEngine):
+    def __init__(self) -> None:
+        super().__init__("привет гермес")
+        self.trigger = False
+
+    def process(self, _pcm_s16le: bytes) -> bool:
+        value = self.trigger
+        self.trigger = False
+        return value
+
+    def reset(self) -> None:
+        pass
+
+
+class FakeWakeLoader(QObject):
+    loaded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, engine: FakeWakeEngine) -> None:
+        super().__init__()
+        self.engine = engine
+        self.closed = False
+
+    def load(self, _language: SpeechLanguage, _phrase: str) -> None:
+        self.loaded.emit(self.engine)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _window(tmp_path: Path, qtbot: QtBot) -> tuple[MainWindow, FakeWorker, FakeRecorder]:
@@ -157,3 +192,35 @@ def test_loaded_file_is_forwarded_to_network_worker(tmp_path: Path, qtbot: QtBot
     window, worker, _ = _window(tmp_path, qtbot)
     window._send_loaded_file("report.txt", "text/plain", b"hello")
     assert worker.calls[-1] == ("file", ("report.txt", "text/plain", b"hello"))
+
+
+def test_wake_ui_keeps_background_audio_local_until_trigger(
+    tmp_path: Path, qtbot: QtBot
+) -> None:
+    worker = FakeWorker()
+    recorder = FakeRecorder()
+    engine = FakeWakeEngine()
+    window = MainWindow(
+        worker=worker,
+        recorder=recorder,
+        history=HistoryStore(tmp_path / "history.db"),
+        url="ws://127.0.0.1:8765/ws",
+        device_id="wake-device",
+        user_name="dmitry",
+        wake_loader=FakeWakeLoader(engine),  # type: ignore[arg-type]
+    )
+    qtbot.addWidget(window)
+    worker.state_changed.emit("ready")
+    window.wake_button.setChecked(True)
+    assert recorder.running
+    recorder.feed(b"background")
+    assert not any(call[0] in {"begin", "audio"} for call in worker.calls)
+
+    engine.trigger = True
+    recorder.feed(b"wake phrase")
+    recorder.feed(b"command")
+    assert worker.calls[-2:] == [("begin", 1), ("audio", b"command")]
+
+    window.mute_button.setChecked(True)
+    assert not recorder.running
+    assert worker.calls[-1] == ("mute", True)

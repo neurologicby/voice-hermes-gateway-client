@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import MAX_SEQUENCE, SpeechLanguage
+from voice_client.wake import WakeEngineLoader, WakeWordEngine
+from voice_client.wake.controller import WakeController
 
 
 class Recorder(Protocol):
@@ -43,6 +45,8 @@ class Recorder(Protocol):
 
 class MainWindow(QMainWindow):
     """UI никогда не выполняет WebSocket, PortAudio или SQLite migration."""
+
+    wake_triggered = Signal()
 
     def __init__(
         self,
@@ -59,6 +63,8 @@ class MainWindow(QMainWindow):
         on_output_device: Callable[[int | None], None] | None = None,
         microphone_device: int | None = None,
         output_device: int | None = None,
+        wake_loader: WakeEngineLoader | None = None,
+        wake_phrase: str = "Привет Гермес",
     ) -> None:
         super().__init__()
         self.worker = worker
@@ -67,6 +73,10 @@ class MainWindow(QMainWindow):
         self._sequence = 1
         self._recording = False
         self._talking = False
+        self._wake_recording = False
+        self._wake_connected = False
+        self._wake_loader = wake_loader
+        self._wake_controller: WakeController | None = None
         self._session_id = f"local:{device_id}"
         self._closing = False
         self._on_close = on_close
@@ -85,6 +95,10 @@ class MainWindow(QMainWindow):
         self.worker.event_received.connect(self.on_server_event)
         self.worker.state_changed.connect(self.on_connection_state)
         self.worker.failed.connect(self.on_failure)
+        self.wake_triggered.connect(self._on_wake_triggered)
+        if self._wake_loader is not None:
+            self._wake_loader.loaded.connect(self._wake_loaded)
+            self._wake_loader.failed.connect(self._wake_failed)
         if self._file_loader is not None:
             self._file_loader.loaded.connect(self._send_loaded_file)
             self._file_loader.failed.connect(self._file_failed)
@@ -92,6 +106,7 @@ class MainWindow(QMainWindow):
             self._device_scanner.scanned.connect(self._devices_scanned)
             self._device_scanner.failed.connect(self.on_failure)
         self._create_tray()
+        self.wake_phrase_edit.setText(wake_phrase)
         self.refresh_history()
         if self._device_scanner is not None:
             self._device_scanner.refresh()
@@ -147,6 +162,23 @@ class MainWindow(QMainWindow):
         pairing_row.addWidget(self.pair_button)
         pairing_row.addWidget(self.pairing_label, 1)
         content_layout.addLayout(pairing_row)
+
+        wake_row = QHBoxLayout()
+        self.wake_phrase_edit = QLineEdit(content)
+        self.wake_phrase_edit.setObjectName("wakePhraseEdit")
+        self.wake_phrase_edit.setPlaceholderText("Привет Гермес / Hello Hermes")
+        self.wake_phrase_edit.editingFinished.connect(self._reload_wake)
+        self.wake_button = QPushButton("Wake word", content)
+        self.wake_button.setObjectName("wakeButton")
+        self.wake_button.setCheckable(True)
+        self.wake_button.setEnabled(self._wake_loader is not None)
+        self.wake_button.toggled.connect(self._set_wake_enabled)
+        self.wake_status = QLabel("Выключен", content)
+        self.wake_status.setObjectName("wakeStatus")
+        wake_row.addWidget(self.wake_phrase_edit, 1)
+        wake_row.addWidget(self.wake_button)
+        wake_row.addWidget(self.wake_status)
+        content_layout.addLayout(wake_row)
 
         controls = QHBoxLayout()
         self.language_combo = QComboBox(content)
@@ -248,6 +280,7 @@ class MainWindow(QMainWindow):
     def _language_changed(self) -> None:
         language = cast(SpeechLanguage, self.language_combo.currentData())
         self.worker.set_language(language)
+        self._reload_wake()
 
     @Slot()
     def _start_talking(self) -> None:
@@ -279,16 +312,123 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _set_muted(self, on: bool) -> None:
         if on:
-            self._cancel_capture()
+            if self._recording:
+                self._cancel_capture()
+            elif self._wake_controller is None:
+                self.worker.interrupt()
+        if self._wake_controller is not None:
+            self._wake_controller.set_muted(on)
+            self._sync_wake_capture()
         self.worker.send_mute(on)
-        self.talk_button.setEnabled(not on and not self.pause_button.isChecked())
+        self._sync_talk_button()
 
     @Slot(bool)
     def _set_paused(self, on: bool) -> None:
         if on:
-            self._cancel_capture()
-        self.talk_button.setEnabled(not on and not self.mute_button.isChecked())
+            if self._recording:
+                self._cancel_capture()
+            elif self._wake_controller is None:
+                self.worker.interrupt()
+        if self._wake_controller is not None:
+            self._wake_controller.set_paused(on)
+            self._sync_wake_capture()
+        self._sync_talk_button()
         self.status_label.setText("Пауза" if on else "Готов")
+
+    @Slot(bool)
+    def _set_wake_enabled(self, on: bool) -> None:
+        if not on:
+            self._stop_wake_capture()
+            if self._wake_controller is not None:
+                self._wake_controller.close()
+                self._wake_controller = None
+            self.wake_status.setText("Выключен")
+            self._sync_talk_button()
+            return
+        phrase = self.wake_phrase_edit.text().strip()
+        if self._wake_loader is None or not phrase:
+            self.wake_button.setChecked(False)
+            self.on_failure("Wake word: укажите фразу и настройте локальную модель")
+            return
+        self._stop_wake_capture()
+        if self._wake_controller is not None:
+            self._wake_controller.close()
+            self._wake_controller = None
+        self._cancel_capture()
+        self.wake_status.setText("Загрузка…")
+        self.wake_phrase_edit.setEnabled(False)
+        language = cast(SpeechLanguage, self.language_combo.currentData())
+        self._wake_loader.load(language, phrase)
+        self._sync_talk_button()
+
+    @Slot()
+    def _reload_wake(self) -> None:
+        if not self.wake_button.isChecked():
+            return
+        self._set_wake_enabled(True)
+
+    @Slot(object)
+    def _wake_loaded(self, engine: object) -> None:
+        if not isinstance(engine, WakeWordEngine):
+            self._wake_failed("Wake loader вернул неверный engine")
+            return
+        if not self.wake_button.isChecked():
+            engine.close()
+            return
+        if self._wake_controller is not None:
+            self._wake_controller.close()
+        self._wake_controller = WakeController(engine, self.worker)
+        self._wake_controller.set_connected(self._wake_connected)
+        self.wake_phrase_edit.setEnabled(True)
+        self.wake_status.setText("Ожидание" if self._wake_connected else "Нет связи")
+        self._sync_wake_capture()
+
+    @Slot(str)
+    def _wake_failed(self, message: str) -> None:
+        self.wake_phrase_edit.setEnabled(True)
+        self.wake_button.setChecked(False)
+        self.on_failure(f"Wake word: {message}")
+
+    def _wake_audio(self, pcm_s16le: bytes) -> None:
+        controller = self._wake_controller
+        if controller is not None and controller.process_pcm(pcm_s16le):
+            self.wake_triggered.emit()
+
+    @Slot()
+    def _on_wake_triggered(self) -> None:
+        self.wake_status.setText("Слушаю")
+        self.status_label.setText("Слушаю")
+
+    def _sync_wake_capture(self) -> None:
+        should_run = (
+            self.wake_button.isChecked()
+            and self._wake_controller is not None
+            and self._wake_connected
+            and not self.mute_button.isChecked()
+            and not self.pause_button.isChecked()
+        )
+        if should_run and not self._wake_recording:
+            try:
+                self.recorder.start(self._wake_audio)
+            except Exception as exc:
+                self._wake_failed(str(exc) or type(exc).__name__)
+                return
+            self._wake_recording = True
+        elif not should_run:
+            self._stop_wake_capture()
+
+    def _stop_wake_capture(self) -> None:
+        if self._wake_recording:
+            self.recorder.stop()
+            self._wake_recording = False
+
+    def _sync_talk_button(self) -> None:
+        enabled = (
+            not self.mute_button.isChecked()
+            and not self.pause_button.isChecked()
+            and not self.wake_button.isChecked()
+        )
+        self.talk_button.setEnabled(enabled)
 
     def _cancel_capture(self) -> None:
         if self._recording:
@@ -336,10 +476,15 @@ class MainWindow(QMainWindow):
         value = self.microphone_combo.currentData()
         if isinstance(value, int):
             self._preferred_input = value
+            restart_wake = self._wake_recording
+            if restart_wake:
+                self._stop_wake_capture()
             try:
                 self.recorder.set_device(value)
             except RuntimeError as exc:
                 self.on_failure(str(exc))
+            if restart_wake:
+                self._sync_wake_capture()
 
     @Slot()
     def _output_changed(self) -> None:
@@ -383,6 +528,8 @@ class MainWindow(QMainWindow):
     def on_server_event(self, message: object) -> None:
         if not isinstance(message, dict):
             return
+        if self._wake_controller is not None:
+            self._wake_controller.on_server_event(message)
         frame_type = message.get("type")
         if frame_type == "pair_code":
             code = str(message.get("code", ""))
@@ -415,11 +562,18 @@ class MainWindow(QMainWindow):
         elif frame_type == "tts_end":
             self._talking = False
             self.status_label.setText("Готов")
+            if self.wake_button.isChecked():
+                self.wake_status.setText("Ожидание")
         elif frame_type == "error":
             self.on_failure(str(message.get("message", "Ошибка сервера")))
 
     @Slot(str)
     def on_connection_state(self, state: str) -> None:
+        self._wake_connected = state == "ready"
+        if self._wake_controller is not None:
+            self._wake_controller.set_connected(self._wake_connected)
+            self.wake_status.setText("Ожидание" if self._wake_connected else "Нет связи")
+            self._sync_wake_capture()
         labels = {
             "connecting": "Подключение…",
             "awaiting_hello": "Проверка доступа…",
@@ -488,8 +642,12 @@ class MainWindow(QMainWindow):
             return
         self._closing = True
         self._pair_retry.stop()
-        if self._recording:
+        if self._recording or self._wake_recording:
             self.recorder.stop()
+        if self._wake_controller is not None:
+            self._wake_controller.close()
+        if self._wake_loader is not None:
+            self._wake_loader.close()
         if not self.worker.close():
             QMessageBox.warning(self, "VoiceGateway", "Сетевой worker не остановился вовремя")
         self.history.close()
