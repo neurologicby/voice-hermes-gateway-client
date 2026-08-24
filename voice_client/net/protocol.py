@@ -7,6 +7,7 @@ from typing import Literal
 PROTOCOL_VERSION = 1
 AUDIO_SEQUENCE_BYTES = 8
 MAX_SEQUENCE = (1 << (AUDIO_SEQUENCE_BYTES * 8)) - 1
+SpeechLanguage = Literal["ru", "en"]
 
 
 class ClientProtocolError(ValueError):
@@ -16,17 +17,26 @@ class ClientProtocolError(ValueError):
 class ClientAudioTurn:
     """Состояние исходящей реплики с поддержкой server-side VAD endpoint."""
 
-    def __init__(self) -> None:
+    def __init__(self, language: SpeechLanguage = "ru") -> None:
         self.active_seq: int | None = None
         self.end_requested = False
         self.completed_seq: int | None = None
+        self.language: SpeechLanguage = "ru"
+        self.set_language(language)
+
+    def set_language(self, language: SpeechLanguage) -> None:
+        if language not in {"ru", "en"}:
+            raise ClientProtocolError("unsupported STT language")
+        self.language = language
 
     def begin(
-        self, seq: int, language: Literal["auto", "ru", "en"] = "auto"
+        self, seq: int, language: SpeechLanguage | None = None
     ) -> dict[str, object]:
         if self.active_seq is not None:
             raise ClientProtocolError("audio turn is already active")
-        frame = audio_start(seq, language)
+        if language is not None:
+            self.set_language(language)
+        frame = audio_start(seq, self.language)
         self.active_seq = seq
         self.end_requested = False
         return frame
@@ -57,9 +67,9 @@ class ClientAudioTurn:
         self.end_requested = False
 
 
-def audio_start(seq: int, language: Literal["auto", "ru", "en"] = "auto") -> dict[str, object]:
+def audio_start(seq: int, language: SpeechLanguage = "ru") -> dict[str, object]:
     _validate_sequence(seq)
-    if language not in {"auto", "ru", "en"}:
+    if language not in {"ru", "en"}:
         raise ClientProtocolError("unsupported STT language")
     return {"type": "audio_start", "seq": seq, "lang": language}
 

@@ -54,3 +54,16 @@ def test_audio_turn_rejects_stale_server_events() -> None:
         turn.server_vad_endpoint(6)
     with pytest.raises(ClientProtocolError):
         turn.accept_final(6)
+
+
+def test_language_switch_is_persisted_for_next_audio_turn() -> None:
+    turn = ClientAudioTurn()
+    assert turn.begin(1)["lang"] == "ru"
+    turn.accept_final(1)
+    turn.set_language("en")
+    assert turn.begin(2)["lang"] == "en"
+
+
+def test_auto_language_is_not_supported() -> None:
+    with pytest.raises(ClientProtocolError):
+        audio_start(1, "auto")  # type: ignore[arg-type]
