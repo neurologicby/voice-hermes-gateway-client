@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, TypeAlias, cast
 from urllib.parse import urlparse
@@ -24,6 +26,9 @@ from voice_client.net.protocol import (
 
 JSONFrame = dict[str, Any]
 WireFrame: TypeAlias = str | bytes
+FILE_CHUNK_BYTES = 64 * 1024
+MAX_FILE_BYTES = 50 * 1024 * 1024
+_MIME_RE = re.compile(r"^[\w!#$&^_.+-]+/[\w!#$&^_.+-]+$")
 Callback: TypeAlias = Callable[[Any], None | Awaitable[None]]
 
 
@@ -65,6 +70,17 @@ class OutboundQueueFull(ClientConnectionError):
     """Bounded очередь заполнена: producer обязан применить backpressure."""
 
 
+class FileUploadInProgress(ClientConnectionError):
+    """Protocol v1 разрешает только один непрерывный binary file stream."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FileBatch:
+    """Marker: sender не должен перемежать эти frames другими сообщениями."""
+
+    frames: tuple[WireFrame, ...]
+
+
 class VoiceWSClient:
     """Reconnect-loop, handshake и маршрутизация protocol v1."""
 
@@ -98,8 +114,11 @@ class VoiceWSClient:
         self._connector = connector or cast(Connector, connect)
         self._on_event = on_event
         self._on_state = on_state
-        self._outbound: asyncio.Queue[tuple[int, WireFrame]] = asyncio.Queue(outbound_limit)
+        self._outbound: asyncio.Queue[tuple[int, WireFrame | _FileBatch]] = asyncio.Queue(
+            outbound_limit
+        )
         self._generation = 0
+        self._file_queued = False
         self._stopping = False
         self._socket: WebSocketConnection | None = None
 
@@ -195,6 +214,36 @@ class VoiceWSClient:
     def send_ping(self) -> None:
         self._enqueue_json({"type": "ping", "t": time.time_ns() // 1_000_000}, require_ready=False)
 
+    def send_file(self, name: str, mime: str, payload: bytes) -> None:
+        if self.audio_turn.active_seq is not None:
+            raise ClientConnectionError("finish the active audio turn before sending a file")
+        if self._file_queued:
+            raise FileUploadInProgress("a file upload is already queued")
+        if (
+            not name
+            or len(name) > 255
+            or name in {".", ".."}
+            or "\x00" in name
+            or "/" in name
+            or "\\" in name
+        ):
+            raise ClientProtocolError("invalid file name")
+        if not _MIME_RE.fullmatch(mime):
+            raise ClientProtocolError("invalid file MIME type")
+        if not payload or len(payload) > MAX_FILE_BYTES:
+            raise ClientProtocolError("file must contain 1..52428800 bytes")
+        header = _json({"type": "file", "name": name, "mime": mime, "size": len(payload)})
+        chunks = tuple(
+            bytes(payload[offset : offset + FILE_CHUNK_BYTES])
+            for offset in range(0, len(payload), FILE_CHUNK_BYTES)
+        )
+        self._file_queued = True
+        try:
+            self._enqueue(_FileBatch((header, *chunks)))
+        except Exception:
+            self._file_queued = False
+            raise
+
     def interrupt(self) -> None:
         """Синхронно очищает playback до постановки interrupt в wire-очередь."""
 
@@ -226,7 +275,14 @@ class VoiceWSClient:
             frame_generation, frame = await self._outbound.get()
             if frame_generation != generation:
                 continue
-            await socket.send(frame)
+            if isinstance(frame, _FileBatch):
+                try:
+                    for part in frame.frames:
+                        await socket.send(part)
+                finally:
+                    self._file_queued = False
+            else:
+                await socket.send(frame)
 
     async def _route(self, wire: str | bytes) -> None:
         if isinstance(wire, bytes):
@@ -267,7 +323,7 @@ class VoiceWSClient:
     def _enqueue_json(self, frame: JSONFrame, *, require_ready: bool = True) -> None:
         self._enqueue(_json(frame), require_ready=require_ready)
 
-    def _enqueue(self, frame: WireFrame, *, require_ready: bool = True) -> None:
+    def _enqueue(self, frame: WireFrame | _FileBatch, *, require_ready: bool = True) -> None:
         allowed = self.state is ConnectionState.READY
         pre_auth_states = {
             ConnectionState.AWAITING_HELLO,
@@ -283,6 +339,7 @@ class VoiceWSClient:
     def _discard_stale_streams(self) -> None:
         self.audio_turn.interrupt()
         self.playback.interrupt()
+        self._file_queued = False
         while True:
             try:
                 self._outbound.get_nowait()
@@ -309,8 +366,10 @@ def _json(frame: JSONFrame) -> str:
 
 
 __all__ = [
+    "MAX_FILE_BYTES",
     "ClientConnectionError",
     "ConnectionState",
+    "FileUploadInProgress",
     "OutboundQueueFull",
     "VoiceWSClient",
 ]

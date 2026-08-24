@@ -10,8 +10,10 @@ from uuid import uuid4
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
+from voice_client.audio.devices import AudioDeviceScanner
 from voice_client.audio.player import AudioPlayer
 from voice_client.audio.recorder import MicrophoneRecorder
+from voice_client.file_transfer import FileTransferLoader
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import SpeechLanguage
 from voice_client.net.ws_client import VoiceWSClient
@@ -30,8 +32,10 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
     language = _setting(config, "speech/language", "ru")
     if language not in {"ru", "en"}:
         language = "ru"
+    microphone_device = _int_setting(config, "audio/input_device")
+    output_device = _int_setting(config, "audio/output_device")
 
-    player = AudioPlayer()
+    player = AudioPlayer(device=output_device)
     client = VoiceWSClient(
         url,
         device_id=device_id,
@@ -40,7 +44,7 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
         language=cast(SpeechLanguage, language),
     )
     worker = AsyncioNetworkWorker(client)
-    recorder = MicrophoneRecorder()
+    recorder = MicrophoneRecorder(device=microphone_device)
     history = HistoryStore()
     window = MainWindow(
         worker=worker,
@@ -50,10 +54,21 @@ def create_window(settings: QSettings | None = None) -> MainWindow:
         device_id=device_id,
         user_name=user_name,
         on_close=player.close,
+        file_loader=FileTransferLoader(),
+        device_scanner=AudioDeviceScanner(),
+        on_output_device=player.set_device,
+        microphone_device=microphone_device,
+        output_device=output_device,
     )
     window.language_combo.setCurrentIndex(0 if language == "ru" else 1)
     window.language_combo.currentIndexChanged.connect(
         lambda: config.setValue("speech/language", window.language_combo.currentData())
+    )
+    window.microphone_combo.currentIndexChanged.connect(
+        lambda: config.setValue("audio/input_device", window.microphone_combo.currentData())
+    )
+    window.output_combo.currentIndexChanged.connect(
+        lambda: config.setValue("audio/output_device", window.output_combo.currentData())
     )
     return window
 
@@ -71,6 +86,17 @@ def main() -> int:
 def _setting(settings: QSettings, key: str, default: str) -> str:
     value = settings.value(key, default)
     return value if isinstance(value, str) and value else default
+
+
+def _int_setting(settings: QSettings, key: str) -> int | None:
+    value = settings.value(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 __all__ = ["create_window", "main"]

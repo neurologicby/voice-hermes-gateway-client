@@ -138,6 +138,11 @@ class MicrophoneRecorder:
             self._callback = None
             raise
 
+    def set_device(self, device: int | str | None) -> None:
+        if self._running:
+            raise RuntimeError("cannot change microphone while recording")
+        self.device = device
+
     def stop(self, timeout: float = 2.0) -> None:
         if not self._running:
             return

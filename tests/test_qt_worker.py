@@ -73,6 +73,9 @@ class FakeAsyncClient:
     def send_ping(self) -> None:
         self._call("ping")
 
+    def send_file(self, name: str, mime: str, payload: bytes) -> None:
+        self._call("file", (name, mime, payload))
+
 
 def test_qt_worker_runs_client_calls_outside_ui_thread(qtbot: QtBot) -> None:
     client = FakeAsyncClient()

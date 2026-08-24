@@ -62,6 +62,14 @@ class AudioPlayer:
         self._thread: threading.Thread | None = None
         self.dropped_chunks = 0
 
+    def set_device(self, device: int | str | None) -> None:
+        with self._lock:
+            self._ensure_open()
+            if device == self.device:
+                return
+            self.interrupt()
+            self.device = device
+
     def start(self, message: dict[str, Any]) -> None:
         with self._lock:
             self._ensure_open()

@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 from pytestqt.qtbot import QtBot
 
+from voice_client.audio.devices import AudioDevice
 from voice_client.history import HistoryStore
 from voice_client.net.protocol import SpeechLanguage
 from voice_client.ui import MainWindow
@@ -54,11 +55,15 @@ class FakeWorker(QObject):
     def send_test(self) -> None:
         self.calls.append(("test", None))
 
+    def send_file(self, name: str, mime: str, payload: bytes) -> None:
+        self.calls.append(("file", (name, mime, payload)))
+
 
 class FakeRecorder:
     def __init__(self) -> None:
         self.callback: Callable[[bytes], None] | None = None
         self.running = False
+        self.device: int | str | None = None
 
     def start(self, callback: Callable[[bytes], None]) -> None:
         self.callback = callback
@@ -66,6 +71,9 @@ class FakeRecorder:
 
     def stop(self, timeout: float = 2.0) -> None:
         self.running = False
+
+    def set_device(self, device: int | str | None) -> None:
+        self.device = device
 
 
 def _window(tmp_path: Path, qtbot: QtBot) -> tuple[MainWindow, FakeWorker, FakeRecorder]:
@@ -127,3 +135,25 @@ def test_barge_in_is_submitted_before_new_turn(tmp_path: Path, qtbot: QtBot) -> 
     )
     window.talk_button.pressed.emit()
     assert worker.calls[-2:] == [("interrupt", None), ("begin", 1)]
+
+
+def test_audio_device_selection_updates_backends(tmp_path: Path, qtbot: QtBot) -> None:
+    outputs: list[int | None] = []
+    window, _, recorder = _window(tmp_path, qtbot)
+    window._on_output_device = outputs.append
+    window._devices_scanned(
+        [
+            AudioDevice(2, "Mic", 1, 0),
+            AudioDevice(3, "Headset", 0, 2),
+        ]
+    )
+    assert recorder.device == 2
+    assert outputs == [3]
+    assert window.microphone_combo.currentText() == "Mic"
+    assert window.output_combo.currentText() == "Headset"
+
+
+def test_loaded_file_is_forwarded_to_network_worker(tmp_path: Path, qtbot: QtBot) -> None:
+    window, worker, _ = _window(tmp_path, qtbot)
+    window._send_loaded_file("report.txt", "text/plain", b"hello")
+    assert worker.calls[-1] == ("file", ("report.txt", "text/plain", b"hello"))

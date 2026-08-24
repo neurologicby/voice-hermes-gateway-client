@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -38,6 +38,8 @@ class Recorder(Protocol):
 
     def stop(self, timeout: float = 2.0) -> None: ...
 
+    def set_device(self, device: int | str | None) -> None: ...
+
 
 class MainWindow(QMainWindow):
     """UI никогда не выполняет WebSocket, PortAudio или SQLite migration."""
@@ -52,6 +54,11 @@ class MainWindow(QMainWindow):
         device_id: str,
         user_name: str,
         on_close: Callable[[], None] | None = None,
+        file_loader: Any | None = None,
+        device_scanner: Any | None = None,
+        on_output_device: Callable[[int | None], None] | None = None,
+        microphone_device: int | None = None,
+        output_device: int | None = None,
     ) -> None:
         super().__init__()
         self.worker = worker
@@ -63,8 +70,14 @@ class MainWindow(QMainWindow):
         self._session_id = f"local:{device_id}"
         self._closing = False
         self._on_close = on_close
+        self._file_loader = file_loader
+        self._device_scanner = device_scanner
+        self._on_output_device = on_output_device
+        self._preferred_input = microphone_device
+        self._preferred_output = output_device
         self.setWindowTitle("VoiceGateway Client")
         self.setMinimumSize(780, 560)
+        self.setAcceptDrops(file_loader is not None)
         self._build_ui(url, device_id, user_name)
         self._pair_retry = QTimer(self)
         self._pair_retry.setInterval(2_000)
@@ -72,8 +85,16 @@ class MainWindow(QMainWindow):
         self.worker.event_received.connect(self.on_server_event)
         self.worker.state_changed.connect(self.on_connection_state)
         self.worker.failed.connect(self.on_failure)
+        if self._file_loader is not None:
+            self._file_loader.loaded.connect(self._send_loaded_file)
+            self._file_loader.failed.connect(self._file_failed)
+        if self._device_scanner is not None:
+            self._device_scanner.scanned.connect(self._devices_scanned)
+            self._device_scanner.failed.connect(self.on_failure)
         self._create_tray()
         self.refresh_history()
+        if self._device_scanner is not None:
+            self._device_scanner.refresh()
 
     def start(self) -> None:
         self.worker.start()
@@ -150,6 +171,30 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.mute_button)
         controls.addWidget(self.pause_button)
         content_layout.addLayout(controls)
+
+        devices = QHBoxLayout()
+        self.microphone_combo = QComboBox(content)
+        self.microphone_combo.setObjectName("microphoneCombo")
+        self.microphone_combo.setPlaceholderText("Микрофон")
+        self.microphone_combo.currentIndexChanged.connect(self._microphone_changed)
+        self.output_combo = QComboBox(content)
+        self.output_combo.setObjectName("outputCombo")
+        self.output_combo.setPlaceholderText("Динамик")
+        self.output_combo.currentIndexChanged.connect(self._output_changed)
+        self.refresh_devices_button = QPushButton("Обновить устройства", content)
+        self.refresh_devices_button.clicked.connect(self._refresh_devices)
+        devices.addWidget(self.microphone_combo)
+        devices.addWidget(self.output_combo)
+        devices.addWidget(self.refresh_devices_button)
+        content_layout.addLayout(devices)
+
+        self.drop_label = QLabel("Перетащите файл сюда (до 50 МБ)", content)
+        self.drop_label.setObjectName("fileDropArea")
+        self.drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_label.setMinimumHeight(54)
+        self.drop_label.setStyleSheet("border: 1px dashed palette(mid); padding: 12px;")
+        self.drop_label.setEnabled(self._file_loader is not None)
+        content_layout.addWidget(self.drop_label)
 
         content_layout.addWidget(QLabel("Живой текст", content))
         self.transcript = QPlainTextEdit(content)
@@ -250,6 +295,89 @@ class MainWindow(QMainWindow):
             self.recorder.stop()
             self._recording = False
         self.worker.interrupt()
+
+    @Slot()
+    def _refresh_devices(self) -> None:
+        if self._device_scanner is not None:
+            self._device_scanner.refresh()
+
+    @Slot(object)
+    def _devices_scanned(self, raw_devices: object) -> None:
+        if not isinstance(raw_devices, list):
+            return
+        old_input = self.microphone_combo.currentData()
+        old_output = self.output_combo.currentData()
+        self.microphone_combo.blockSignals(True)
+        self.output_combo.blockSignals(True)
+        self.microphone_combo.clear()
+        self.output_combo.clear()
+        for device in raw_devices:
+            index = getattr(device, "index", None)
+            name = getattr(device, "name", "Audio device")
+            if getattr(device, "input_channels", 0) > 0:
+                self.microphone_combo.addItem(str(name), index)
+            if getattr(device, "output_channels", 0) > 0:
+                self.output_combo.addItem(str(name), index)
+        _restore_combo(
+            self.microphone_combo,
+            old_input if old_input is not None else self._preferred_input,
+        )
+        _restore_combo(
+            self.output_combo,
+            old_output if old_output is not None else self._preferred_output,
+        )
+        self.microphone_combo.blockSignals(False)
+        self.output_combo.blockSignals(False)
+        self._microphone_changed()
+        self._output_changed()
+
+    @Slot()
+    def _microphone_changed(self) -> None:
+        value = self.microphone_combo.currentData()
+        if isinstance(value, int):
+            self._preferred_input = value
+            try:
+                self.recorder.set_device(value)
+            except RuntimeError as exc:
+                self.on_failure(str(exc))
+
+    @Slot()
+    def _output_changed(self) -> None:
+        value = self.output_combo.currentData()
+        if isinstance(value, int):
+            self._preferred_output = value
+            if self._on_output_device is not None:
+                self._on_output_device(value)
+
+    @Slot(str, str, bytes)
+    def _send_loaded_file(self, name: str, mime: str, payload: bytes) -> None:
+        self.worker.send_file(name, mime, payload)
+        self.drop_label.setText(f"Отправляется: {name}")
+
+    @Slot(str, str)
+    def _file_failed(self, path: str, error: str) -> None:
+        self.on_failure(f"{Path(path).name}: {error}")
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        urls = event.mimeData().urls()
+        if self._file_loader is not None and any(url.isLocalFile() for url in urls):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._file_loader is None:
+            event.ignore()
+            return
+        accepted = False
+        for url in event.mimeData().urls()[:5]:
+            if url.isLocalFile() and self._file_loader.enqueue(Path(url.toLocalFile())):
+                accepted = True
+        if accepted:
+            self.drop_label.setText("Файл добавлен в очередь")
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     @Slot(object)
     def on_server_event(self, message: object) -> None:
@@ -365,6 +493,8 @@ class MainWindow(QMainWindow):
         if not self.worker.close():
             QMessageBox.warning(self, "VoiceGateway", "Сетевой worker не остановился вовремя")
         self.history.close()
+        if self._file_loader is not None:
+            self._file_loader.close()
         if self._on_close is not None:
             self._on_close()
         if self.tray is not None:
@@ -373,3 +503,8 @@ class MainWindow(QMainWindow):
 
 
 __all__ = ["MainWindow", "Recorder"]
+
+
+def _restore_combo(combo: QComboBox, value: object) -> None:
+    index = combo.findData(value)
+    combo.setCurrentIndex(index if index >= 0 else (0 if combo.count() else -1))

@@ -46,6 +46,8 @@ class AsyncVoiceClient(Protocol):
 
     def send_ping(self) -> None: ...
 
+    def send_file(self, name: str, mime: str, payload: bytes) -> None: ...
+
 
 class AsyncioNetworkWorker(QObject):
     """Владеет одним QThread и одним asyncio loop до close()."""
@@ -116,6 +118,9 @@ class AsyncioNetworkWorker(QObject):
 
     def send_ping(self) -> None:
         self._submit(self.client.send_ping)
+
+    def send_file(self, name: str, mime: str, payload: bytes) -> None:
+        self._submit(self.client.send_file, name, mime, bytes(payload))
 
     @Slot()
     def _run(self) -> None:

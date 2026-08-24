@@ -8,6 +8,7 @@ import pytest
 
 from voice_client.net.ws_client import (
     ConnectionState,
+    FileUploadInProgress,
     OutboundQueueFull,
     VoiceWSClient,
 )
@@ -212,3 +213,34 @@ def test_ping_and_test_are_allowed_while_awaiting_hello() -> None:
     client.send_ping()
     client.send_test()
     assert client._outbound.qsize() == 2
+
+
+def test_file_header_and_chunks_are_sent_as_one_contiguous_batch() -> None:
+    asyncio.run(_file_header_and_chunks_are_sent_as_one_contiguous_batch())
+
+
+async def _file_header_and_chunks_are_sent_as_one_contiguous_batch() -> None:
+    socket = FakeSocket()
+    client = VoiceWSClient(
+        "ws://localhost/ws",
+        device_id=DEVICE_ID,
+        user="user",
+        playback=FakePlayback(),
+    )
+    client.state = ConnectionState.READY
+    payload = b"a" * 70_000
+    client.send_file("report.txt", "text/plain", payload)
+    with pytest.raises(FileUploadInProgress):
+        client.send_file("second.txt", "text/plain", b"second")
+    sender = asyncio.create_task(client._send_loop(socket, 0))
+    await _spin_until(lambda: len(socket.sent) == 3)
+    sender.cancel()
+    await asyncio.gather(sender, return_exceptions=True)
+    assert json.loads(str(socket.sent[0])) == {
+        "type": "file",
+        "name": "report.txt",
+        "mime": "text/plain",
+        "size": len(payload),
+    }
+    assert b"".join(part for part in socket.sent[1:] if isinstance(part, bytes)) == payload
+    assert client._file_queued is False
