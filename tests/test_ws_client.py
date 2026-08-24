@@ -199,3 +199,16 @@ def test_pairing_and_hello_retry_are_allowed_before_ready() -> None:
     client.request_pairing("Иванов Иван")
     client.retry_hello()
     assert client._outbound.qsize() == 2
+
+
+def test_ping_and_test_are_allowed_while_awaiting_hello() -> None:
+    client = VoiceWSClient(
+        "ws://localhost/ws",
+        device_id=DEVICE_ID,
+        user="user",
+        playback=FakePlayback(),
+    )
+    client.state = ConnectionState.AWAITING_HELLO
+    client.send_ping()
+    client.send_test()
+    assert client._outbound.qsize() == 2

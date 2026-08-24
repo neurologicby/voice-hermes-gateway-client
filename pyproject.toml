@@ -14,6 +14,9 @@ dependencies = [
     "websockets==15.0.1",
 ]
 
+[project.scripts]
+voice-client = "voice_client.app:main"
+
 [project.optional-dependencies]
 dev = [
     "mypy==1.17.1",

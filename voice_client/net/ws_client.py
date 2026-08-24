@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import Enum
 from typing import Any, Protocol, TypeAlias, cast
@@ -102,6 +103,19 @@ class VoiceWSClient:
         self._stopping = False
         self._socket: WebSocketConnection | None = None
 
+    def set_callbacks(
+        self,
+        *,
+        on_event: Callback | None = None,
+        on_state: Callback | None = None,
+    ) -> None:
+        """Назначается до run(); Qt worker использует callbacks как signal bridge."""
+
+        if self.state is not ConnectionState.STOPPED:
+            raise ClientConnectionError("callbacks can only be changed while stopped")
+        self._on_event = on_event
+        self._on_state = on_state
+
     async def run(self) -> None:
         """Работает до stop(); reconnect и backoff выполняет websockets."""
 
@@ -171,6 +185,15 @@ class VoiceWSClient:
         if not text or len(text) > 16_384:
             raise ClientProtocolError("text must contain 1..16384 characters")
         self._enqueue_json({"type": "text", "text": text})
+
+    def send_mute(self, on: bool) -> None:
+        self._enqueue_json({"type": "mute", "on": on})
+
+    def send_test(self) -> None:
+        self._enqueue_json({"type": "test"}, require_ready=False)
+
+    def send_ping(self) -> None:
+        self._enqueue_json({"type": "ping", "t": time.time_ns() // 1_000_000}, require_ready=False)
 
     def interrupt(self) -> None:
         """Синхронно очищает playback до постановки interrupt в wire-очередь."""
@@ -246,9 +269,11 @@ class VoiceWSClient:
 
     def _enqueue(self, frame: WireFrame, *, require_ready: bool = True) -> None:
         allowed = self.state is ConnectionState.READY
-        if not allowed and not (
-            not require_ready and self.state is ConnectionState.PAIR_REQUIRED
-        ):
+        pre_auth_states = {
+            ConnectionState.AWAITING_HELLO,
+            ConnectionState.PAIR_REQUIRED,
+        }
+        if not allowed and not (not require_ready and self.state in pre_auth_states):
             raise ClientConnectionError("VoiceGateway connection is not ready")
         try:
             self._outbound.put_nowait((self._generation, frame))
